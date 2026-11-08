@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unicorn Chess</title>
+<style>
+  body { font: 16px system-ui, sans-serif; text-align: center; margin: 24px; }
+  #board {
+    display: grid; grid-template-columns: repeat(8, min(11vw, 64px));
+    width: max-content; margin: 16px auto; border: 3px solid #333;
+  }
+  .sq {
+    width: min(11vw, 64px); height: min(11vw, 64px); border: 0;
+    display: grid; place-items: center; padding: 0; cursor: pointer;
+    font-size: min(8vw, 44px); position: relative;
+  }
+  .light { background: #f0d9b5; }
+  .dark { background: #779556; }
+  .selected { outline: 4px solid #f6d743; outline-offset: -4px; }
+  .target::after {
+    content: ""; width: 18px; height: 18px; border-radius: 50%;
+    background: #2228; position: absolute;
+  }
+  #status { min-height: 1.5em; font-weight: 600; }
+  button#reset { padding: 8px 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h1>Unicorn Chess</h1>
+<p>Click a piece, then click where it should move. You play White.</p>
+<div id="status"></div>
+<div id="board" aria-label="Chess board"></div>
+<button id="reset">New game</button>
+
+<script>
+const icons = {
+  w: { K:"♔", Q:"♕", R:"♖", B:"♗", N:"♘", P:"♙", U:"🦄" },
+  b: { K:"♚", Q:"♛", R:"♜", B:"♝", N:"♞", P:"♟" }
+};
+const dirsRook = [[1,0],[-1,0],[0,1],[0,-1]];
+const dirsBishop = [[1,1],[1,-1],[-1,1],[-1,-1]];
+let board, turn, selected, legal, gameOver;
+
+function newGame() {
+  board = [
+    [{t:"R",c:"b"},{t:"N",c:"b"},{t:"B",c:"b"},{t:"Q",c:"b"},{t:"K",c:"b"},{t:"B",c:"b"},{t:"N",c:"b"},{t:"R",c:"b"}],
+    Array.from({length:8},()=>({t:"P",c:"b"})),
+    ...Array.from({length:4},()=>Array(8).fill(null)),
+    Array.from({length:8},()=>({t:"P",c:"w"})),
+    [{t:"U",c:"w"},{t:"N",c:"w"},{t:"B",c:"w"},{t:"Q",c:"w"},{t:"K",c:"w"},{t:"B",c:"w"},{t:"N",c:"w"},{t:"R",c:"w"}]
+  ];
+  turn = "w"; selected = null; legal = []; gameOver = false;
+  render();
+}
+
+function inside(r,c) { return r>=0 && r<8 && c>=0 && c<8; }
+function copyBoard(b) { return b.map(row => row.map(p => p && {...p})); }
+
+function pseudoMoves(b,r,c) {
+  const p = b[r][c], moves = [];
+  if (!p) return moves;
+  const add = (rr,cc) => moves.push({r:rr,c:cc});
+
+  if (p.t === "P") {
+    const d = p.c === "w" ? -1 : 1, start = p.c === "w" ? 6 : 1;
+    if (inside(r+d,c) && !b[r+d][c]) {
+      add(r+d,c);
+      if (r === start && !b[r+2*d][c]) add(r+2*d,c);
+    }
+    for (const dc of [-1,1]) {
+      const rr=r+d, cc=c+dc;
+      if (inside(rr,cc) && b[rr][cc] && b[rr][cc].c !== p.c) add(rr,cc);
+    }
+    return moves;
+  }
+
+  if (p.t === "N") {
+    for (const [dr,dc] of [[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]]) {
+      const rr=r+dr, cc=c+dc;
+      if (inside(rr,cc) && (!b[rr][cc] || b[rr][cc].c !== p.c)) add(rr,cc);
+    }
+    return moves;
+  }
+
+  if (p.t === "K") {
+    for (let dr=-1;dr<=1;dr++) for (let dc=-1;dc<=1;dc++) {
+      if (!dr && !dc) continue;
+      const rr=r+dr, cc=c+dc;
+      if (inside(rr,cc) && (!b[rr][cc] || b[rr][cc].c !== p.c)) add(rr,cc);
+    }
+    return moves;
+  }
+
+  let dirs = [];
+  if (["R","Q","U"].includes(p.t)) dirs.push(...dirsRook);
+  if (["B","Q"].includes(p.t)) dirs.push(...dirsBishop);
+
+  for (const [dr,dc] of dirs) {
+    let rr=r+dr, cc=c+dc;
+    while (inside(rr,cc)) {
+      const there = b[rr][cc];
+      if (there && there.c === p.c) break;
+      add(rr,cc);
+      // The unicorn may continue past enemy pieces; other sliders stop there.
+      if (there && p.t !== "U") break;
+      rr += dr; cc += dc;
+    }
+  }
+  return moves;
+}
+
+function applyMove(b, from, to) {
+  const moving = b[from.r][from.c];
+  const next = copyBoard(b);
+  if (moving.t === "U") {
+    const dr = Math.sign(to.r-from.r), dc = Math.sign(to.c-from.c);
+    let r=from.r+dr, c=from.c+dc;
+    while (r!==to.r || c!==to.c) {
+      if (next[r][c] && next[r][c].c !== moving.c) next[r][c]=null;
+      r+=dr; c+=dc;
+    }
+    if (next[to.r][to.c] && next[to.r][to.c].c !== moving.c) next[to.r][to.c]=null;
+  }
+  next[to.r][to.c] = {...moving};
+  next[from.r][from.c] = null;
+  if (next[to.r][to.c].t === "P" && (to.r===0 || to.r===7)) next[to.r][to.c].t="Q";
+  return next;
+}
+
+function kingPosition(b,color) {
+  for (let r=0;r<8;r++) for (let c=0;c<8;c++)
+    if (b[r][c]?.t==="K" && b[r][c].c===color) return {r,c};
+  return null;
+}
+
+function isAttacked(b, target, byColor) {
+  for (let r=0;r<8;r++) for (let c=0;c<8;c++) {
+    if (b[r][c]?.c !== byColor) continue;
+    if (pseudoMoves(b,r,c).some(m=>m.r===target.r && m.c===target.c)) return true;
+  }
+  return false;
+}
+
+function inCheck(b,color) {
+  const king=kingPosition(b,color);
+  return king ? isAttacked(b,king,color==="w"?"b":"w") : false;
+}
+
+function legalMovesFrom(b,r,c) {
+  const p=b[r][c];
+  if (!p) return [];
+  return pseudoMoves(b,r,c).filter(to => {
+    // Kings are checked, not captured.
+    if (b[to.r][to.c]?.t==="K") return false;
+    return !inCheck(applyMove(b,{r,c},to),p.c);
+  });
+}
+
+function allLegalMoves(b,color) {
+  const out=[];
+  for (let r=0;r<8;r++) for (let c=0;c<8;c++) {
+    if (b[r][c]?.c===color)
+      for (const m of legalMovesFrom(b,r,c)) out.push({from:{r,c},to:m});
+  }
+  return out;
+}
+
+function render() {
+  const el=document.getElementById("board");
+  el.innerHTML="";
+  for (let r=0;r<8;r++) for (let c=0;c<8;c++) {
+    const sq=document.createElement("button");
+    sq.className="sq "+((r+c)%2 ? "dark":"light");
+    if (selected && selected.r===r && selected.c===c) sq.classList.add("selected");
+    if (legal.some(m=>m.r===r && m.c===c)) sq.classList.add("target");
+    const p=board[r][c];
+    sq.textContent=p ? icons[p.c][p.t] : "";
+    sq.setAttribute("aria-label", `${"abcdefgh"[c]}${8-r}${p ? " "+p.t : ""}`);
+    sq.onclick=()=>clickSquare(r,c);
+    el.appendChild(sq);
+  }
+  updateStatus();
+}
+
+function updateStatus() {
+  const status=document.getElementById("status");
+  if (gameOver) return;
+  const moves=allLegalMoves(board,turn);
+  if (!moves.length) {
+    gameOver=true;
+    status.textContent=inCheck(board,turn)
+      ? `${turn==="w"?"Black":"White"} wins by checkmate!`
+      : "Draw by stalemate.";
+  } else {
+    status.textContent=`${turn==="w"?"White":"Black"} to move${inCheck(board,turn)?" — check!":""}`;
+  }
+}
+
+function clickSquare(r,c) {
+  if (gameOver) return;
+  if (selected && legal.some(m=>m.r===r && m.c===c)) {
+    board=applyMove(board,selected,{r,c});
+    selected=null; legal=[]; turn=turn==="w"?"b":"w";
+  } else if (board[r][c]?.c===turn) {
+    selected={r,c}; legal=legalMovesFrom(board,r,c);
+  } else {
+    selected=null; legal=[];
+  }
+  render();
+}
+document.getElementById("reset").onclick=newGame;
+newGame();
+</script>
+</body>
+</html>
